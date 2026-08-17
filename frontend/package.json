@@ -17,10 +17,10 @@
     "concurrently": "^10.0.4"
   },
   "scripts": {
-    "start": "react-scripts start",
-    "server": "cd ../backend && npm start",
-    "dev": "concurrently \"npm start\" \"npm run server\"",
-    "build": "react-scripts build",
+     "start": "react-scripts start",
+     "dev": "npm start",
+     "build": "react-scripts build",
+     "server": "cd ../backend && npm start",
     "test": "react-scripts test"
   },
   "browserslist": {

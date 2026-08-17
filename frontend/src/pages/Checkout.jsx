@@ -5,394 +5,372 @@ import { AuthContext } from "../context/AuthContext";
 import { clearCart } from "../redux/cartSlice";
 
 const Checkout = () => {
-    const { user } = useContext(AuthContext);
+  const { user } = useContext(AuthContext);
+  const cartItems = useSelector((state) => state.cart.cartItems);
 
-    const cartItems = useSelector(
-        (state) => state.cart.cartItems
-    );
+  const dispatch = useDispatch();
+  const navigate = useNavigate();
 
-    const dispatch = useDispatch();
-    const navigate = useNavigate();
+  const [paymentMethod, setPaymentMethod] = useState("");
+  const [loading, setLoading] = useState(false);
 
-    const [address, setAddress] = useState({
-        fullName: "",
-        street: "",
-        city: "",
-        postalCode: "",
-        country: "",
-    });
+  const [address, setAddress] = useState({
+    fullName: "",
+    street: "",
+    city: "",
+    postalCode: "",
+    country: "",
+  });
 
-    const totalPrice = cartItems.reduce(
-        (acc, item) => acc + item.price * item.qty,
-        0
-    );
+  const totalPrice = cartItems.reduce(
+    (acc, item) => acc + item.price * item.qty,
+    0,
+  );
 
-    const handlePayment = async () => {
-        try {
-            if (!user) {
-                alert("Please login first");
-                navigate("/login");
-                return;
-            }
+  // Save order in database
+  const saveOrder = async (paymentId, method) => {
+    try {
+      const saveOrderRes = await fetch("/api/orders", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${user.token}`,
+        },
+        body: JSON.stringify({
+          items: cartItems,
+          totalAmount: totalPrice,
+          address,
+          paymentId,
+          paymentMethod: method,
+        }),
+      });
 
-            if (cartItems.length === 0) {
-                alert("Your cart is empty");
-                return;
-            }
+      const data = await saveOrderRes.json();
 
-            if (totalPrice <= 0) {
-                alert("Invalid payment amount");
-                return;
-            }
+      if (!saveOrderRes.ok) {
+        alert(data.message || "Order saving failed");
+        return false;
+      }
 
-            console.log("Total amount:", totalPrice);
+      dispatch(clearCart());
 
-            // ==========================================
-            // STEP 1: CREATE RAZORPAY ORDER
-            // ==========================================
+      // Pass payment method to success page
+      navigate("/ordersuccess", {
+        state: {
+          paymentMethod: method,
+          orderId: data._id || data.orderId,
+        },
+      });
 
-            const orderRes = await fetch("/api/payment/order", {
-                method: "POST",
-                headers: {
-                    "Content-Type": "application/json",
-                },
-                body: JSON.stringify({
-                    amount: totalPrice,
-                }),
+      return true;
+    } catch (error) {
+      console.error("Save order error:", error);
+      alert("Something went wrong while saving the order");
+      return false;
+    }
+  };
+
+  // Cash on Delivery
+  const handleCOD = async () => {
+    if (!user) {
+      alert("Please login first");
+      navigate("/login");
+      return;
+    }
+
+    try {
+      setLoading(true);
+
+      const paymentId = "COD_" + Date.now();
+
+      await saveOrder(paymentId, "COD");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // Razorpay Online Payment
+  const handleOnlinePayment = async () => {
+    if (!user) {
+      alert("Please login first");
+      navigate("/login");
+      return;
+    }
+
+    try {
+      setLoading(true);
+
+      // Create Razorpay order from backend
+      const orderRes = await fetch("/api/payment/order", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          amount: totalPrice,
+        }),
+      });
+
+      const orderData = await orderRes.json();
+
+      if (!orderRes.ok) {
+        alert(orderData.message || "Unable to initialize payment");
+        setLoading(false);
+        return;
+      }
+
+      if (!window.Razorpay) {
+        alert("Razorpay SDK not loaded. Please add Razorpay checkout script.");
+        setLoading(false);
+        return;
+      }
+
+      const options = {
+        // IMPORTANT:
+        // Use your real Razorpay TEST key here.
+        // Example: rzp_test_xxxxxxxxxx
+        key: process.env.REACT_APP_RAZORPAY_KEY_ID,
+
+        amount: orderData.amount,
+        currency: orderData.currency || "INR",
+
+        name: "ShopNest",
+        description: "ShopNest Order",
+
+        order_id: orderData.id,
+
+        prefill: {
+          name: address.fullName,
+          email: user?.email || "",
+          contact: user?.phone || "9999999999",
+        },
+
+        theme: {
+          color: "#f97316",
+        },
+
+        handler: async function (response) {
+          try {
+            // Verify Razorpay payment
+            const verifyRes = await fetch("/api/payment/verify", {
+              method: "POST",
+              headers: {
+                "Content-Type": "application/json",
+              },
+              body: JSON.stringify(response),
             });
 
-            const orderData = await orderRes.json();
+            const verifyData = await verifyRes.json();
 
-            console.log("Order API response:", orderData);
-
-            if (!orderRes.ok) {
-                alert(
-                    orderData.message ||
-                    "Unable to create payment order"
-                );
-                return;
+            if (!verifyRes.ok) {
+              alert(verifyData.message || "Payment verification failed");
+              return;
             }
 
-            // IMPORTANT:
-            // Backend returns:
-            // { success: true, order: {...} }
+            // Save order
+            await saveOrder(response.razorpay_payment_id, "ONLINE");
+          } catch (error) {
+            console.error("Payment verification error:", error);
+            alert("Payment verification failed");
+          }
+        },
 
-            const razorpayOrder = orderData.order;
+        modal: {
+          ondismiss: function () {
+            setLoading(false);
+          },
+        },
+      };
 
-            if (!razorpayOrder) {
-                alert("Razorpay order was not received");
-                return;
+      const razorpay = new window.Razorpay(options);
+
+      razorpay.on("payment.failed", function (response) {
+        console.error("Payment failed:", response.error);
+        alert(response.error.description || "Payment failed");
+        setLoading(false);
+      });
+
+      razorpay.open();
+
+      setLoading(false);
+    } catch (error) {
+      console.error("Online payment error:", error);
+      alert("Something went wrong with online payment");
+      setLoading(false);
+    }
+  };
+
+  // Pay Now button
+  const handleSubmit = (e) => {
+    e.preventDefault();
+
+    if (!user) {
+      alert("Please login first");
+      navigate("/login");
+      return;
+    }
+
+    if (!paymentMethod) {
+      alert("Please select a payment method");
+      return;
+    }
+
+    if (paymentMethod === "COD") {
+      handleCOD();
+    } else if (paymentMethod === "ONLINE") {
+      handleOnlinePayment();
+    }
+  };
+
+  return (
+    <div className="checkout-container">
+      <h2>Checkout</h2>
+
+      <div className="checkout-content">
+        <form onSubmit={handleSubmit} className="shipping-form">
+          <h3>Shipping Address</h3>
+
+          <input
+            type="text"
+            placeholder="Full Name"
+            required
+            value={address.fullName}
+            onChange={(e) =>
+              setAddress({
+                ...address,
+                fullName: e.target.value,
+              })
             }
+          />
 
-            console.log(
-                "Razorpay Order ID:",
-                razorpayOrder.id
-            );
-
-            // ==========================================
-            // STEP 2: CHECK RAZORPAY SCRIPT
-            // ==========================================
-
-            if (!window.Razorpay) {
-                alert(
-                    "Razorpay Checkout is not loaded. Please refresh the page."
-                );
-                return;
+          <input
+            type="text"
+            placeholder="Street"
+            required
+            value={address.street}
+            onChange={(e) =>
+              setAddress({
+                ...address,
+                street: e.target.value,
+              })
             }
+          />
 
-            // ==========================================
-            // STEP 3: RAZORPAY CHECKOUT
-            // ==========================================
+          <input
+            type="text"
+            placeholder="City"
+            required
+            value={address.city}
+            onChange={(e) =>
+              setAddress({
+                ...address,
+                city: e.target.value,
+              })
+            }
+          />
 
-            const options = {
-                // IMPORTANT:
-                // Put your REAL Razorpay TEST KEY ID here.
-                key: "rzp_test_YOUR_REAL_KEY_ID",
+          <input
+            type="text"
+            placeholder="Postal Code"
+            required
+            value={address.postalCode}
+            onChange={(e) =>
+              setAddress({
+                ...address,
+                postalCode: e.target.value,
+              })
+            }
+          />
 
-                amount: razorpayOrder.amount,
+          <input
+            type="text"
+            placeholder="Country"
+            required
+            value={address.country}
+            onChange={(e) =>
+              setAddress({
+                ...address,
+                country: e.target.value,
+              })
+            }
+          />
 
-                currency: razorpayOrder.currency,
+          {/* Payment Method */}
+          <div
+            className="payment-method"
+            style={{
+              marginTop: "25px",
+              padding: "20px",
+              border: "1px solid #ddd",
+              borderRadius: "10px",
+            }}
+          >
+            <h3>Payment Method</h3>
 
-                name: "ShopNest",
+            {/* COD */}
+            <label
+              style={{
+                display: "block",
+                padding: "15px",
+                marginBottom: "10px",
+                border: "1px solid #ddd",
+                borderRadius: "8px",
+                cursor: "pointer",
+              }}
+            >
+              <input
+                type="radio"
+                name="paymentMethod"
+                value="COD"
+                checked={paymentMethod === "COD"}
+                onChange={(e) => setPaymentMethod(e.target.value)}
+              />
 
-                description: "ShopNest Product Purchase",
+              <span style={{ marginLeft: "10px" }}>💵 Cash on Delivery</span>
+            </label>
 
-                order_id: razorpayOrder.id,
+            {/* Online */}
+            <label
+              style={{
+                display: "block",
+                padding: "15px",
+                border: "1px solid #ddd",
+                borderRadius: "8px",
+                cursor: "pointer",
+              }}
+            >
+              <input
+                type="radio"
+                name="paymentMethod"
+                value="ONLINE"
+                checked={paymentMethod === "ONLINE"}
+                onChange={(e) => setPaymentMethod(e.target.value)}
+              />
 
-                handler: async function (response) {
-                    console.log(
-                        "Razorpay payment response:",
-                        response
-                    );
+              <span style={{ marginLeft: "10px" }}>
+                💳 Online Payment (Razorpay)
+              </span>
+            </label>
+          </div>
 
-                    try {
-                        // ==================================
-                        // STEP 4: VERIFY PAYMENT
-                        // ==================================
+          {/* Summary */}
+          <div className="checkout-summary">
+            <h4>Total to Pay: ₹{totalPrice.toFixed(2)}</h4>
 
-                        const verifyRes = await fetch(
-                            "/api/payment/verify",
-                            {
-                                method: "POST",
-                                headers: {
-                                    "Content-Type":
-                                        "application/json",
-                                },
-                                body: JSON.stringify({
-                                    razorpay_order_id:
-                                        response.razorpay_order_id,
-
-                                    razorpay_payment_id:
-                                        response.razorpay_payment_id,
-
-                                    razorpay_signature:
-                                        response.razorpay_signature,
-                                }),
-                            }
-                        );
-
-                        const verifyData =
-                            await verifyRes.json();
-
-                        console.log(
-                            "Verification response:",
-                            verifyData
-                        );
-
-                        if (!verifyRes.ok) {
-                            alert(
-                                verifyData.message ||
-                                "Payment verification failed"
-                            );
-                            return;
-                        }
-
-                        // ==================================
-                        // STEP 5: SAVE ORDER
-                        // ==================================
-
-                        const saveOrderRes = await fetch(
-                            "/api/orders",
-                            {
-                                method: "POST",
-                                headers: {
-                                    "Content-Type":
-                                        "application/json",
-
-                                    Authorization:
-                                        `Bearer ${user.token}`,
-                                },
-
-                                body: JSON.stringify({
-                                    items: cartItems,
-
-                                    totalAmount: totalPrice,
-
-                                    address: address,
-
-                                    paymentId:
-                                        response.razorpay_payment_id,
-                                }),
-                            }
-                        );
-
-                        const saveOrderData =
-                            await saveOrderRes.json();
-
-                        console.log(
-                            "Save order response:",
-                            saveOrderData
-                        );
-
-                        if (!saveOrderRes.ok) {
-                            alert(
-                                saveOrderData.message ||
-                                "Order saving failed"
-                            );
-                            return;
-                        }
-
-                        // ==================================
-                        // STEP 6: SUCCESS
-                        // ==================================
-
-                        dispatch(clearCart());
-
-                        navigate("/ordersuccess");
-
-                    } catch (error) {
-                        console.error(
-                            "Verification error:",
-                            error
-                        );
-
-                        alert(
-                            "Payment verification failed"
-                        );
-                    }
-                },
-
-                prefill: {
-                    name: address.fullName || user?.name || "",
-                    email: user?.email || "",
-                    contact: "9999999999",
-                },
-
-                theme: {
-                    color: "#f97316",
-                },
-            };
-
-            // ==========================================
-            // STEP 7: OPEN RAZORPAY
-            // ==========================================
-
-            const razorpay =
-                new window.Razorpay(options);
-
-            razorpay.on(
-                "payment.failed",
-                function (response) {
-                    console.error(
-                        "RAZORPAY PAYMENT FAILED:",
-                        response.error
-                    );
-
-                    alert(
-                        response.error?.description ||
-                        "Payment failed"
-                    );
-                }
-            );
-
-            razorpay.open();
-
-        } catch (error) {
-            console.error(
-                "PAYMENT ERROR:",
-                error
-            );
-
-            alert(
-                error.message ||
-                "Payment failed"
-            );
-        }
-    };
-
-    const handleSubmit = (e) => {
-        e.preventDefault();
-
-        if (!user) {
-            alert("Please login first");
-            navigate("/login");
-            return;
-        }
-
-        handlePayment();
-    };
-
-    return (
-        <div className="checkout-container">
-
-            <h2>Checkout</h2>
-
-            <div className="checkout-content">
-
-                <form
-                    onSubmit={handleSubmit}
-                    className="shipping-form"
-                >
-
-                    <h3>Shipping Address</h3>
-
-                    <input
-                        type="text"
-                        placeholder="Full Name"
-                        required
-                        value={address.fullName}
-                        onChange={(e) =>
-                            setAddress({
-                                ...address,
-                                fullName: e.target.value,
-                            })
-                        }
-                    />
-
-                    <input
-                        type="text"
-                        placeholder="Street"
-                        required
-                        value={address.street}
-                        onChange={(e) =>
-                            setAddress({
-                                ...address,
-                                street: e.target.value,
-                            })
-                        }
-                    />
-
-                    <input
-                        type="text"
-                        placeholder="City"
-                        required
-                        value={address.city}
-                        onChange={(e) =>
-                            setAddress({
-                                ...address,
-                                city: e.target.value,
-                            })
-                        }
-                    />
-
-                    <input
-                        type="text"
-                        placeholder="Postal Code"
-                        required
-                        value={address.postalCode}
-                        onChange={(e) =>
-                            setAddress({
-                                ...address,
-                                postalCode: e.target.value,
-                            })
-                        }
-                    />
-
-                    <input
-                        type="text"
-                        placeholder="Country"
-                        required
-                        value={address.country}
-                        onChange={(e) =>
-                            setAddress({
-                                ...address,
-                                country: e.target.value,
-                            })
-                        }
-                    />
-
-                    <div className="checkout-summary">
-
-                        <h4>
-                            Total to Pay: ₹
-                            {totalPrice.toFixed(2)}
-                        </h4>
-
-                        <button
-                            type="submit"
-                            className="btn"
-                        >
-                            Pay Now
-                        </button>
-
-                    </div>
-
-                </form>
-
-            </div>
-
-        </div>
-    );
+            <button type="submit" className="btn" disabled={loading}>
+              {loading
+                ? "Processing..."
+                : paymentMethod === "COD"
+                  ? "Place Order"
+                  : paymentMethod === "ONLINE"
+                    ? "Pay Online"
+                    : "Pay Now"}
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+  );
 };
 
 export default Checkout;

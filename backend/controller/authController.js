@@ -215,10 +215,89 @@ const getUsers = async (req, res) => {
     }
 };
 
+const makeAdmin = async (req, res) => {
+  try {
+    const user = await User.findById(req.params.id);
+
+    if (!user) {
+      return res.status(404).json({
+        message: 'User not found'
+      });
+    }
+
+    user.role = 'admin';
+
+    await user.save();
+
+    res.json({
+      message: 'User promoted to admin successfully',
+      user: {
+        _id: user._id,
+        name: user.name,
+        email: user.email,
+        role: user.role,
+        createdAt: user.createdAt
+      }
+    });
+
+  } catch (error) {
+    console.error(error);
+
+    res.status(500).json({
+      message: error.message
+    });
+  }
+};
+// =============================
+// Remove Admin Role
+// =============================
+const removeAdmin = async (req, res) => {
+    try {
+        const user = await User.findById(req.params.id);
+
+        if (!user) {
+            return res.status(404).json({
+                message: "User not found"
+            });
+        }
+
+        // Don't allow admin to remove their own admin role
+        if (req.user._id.toString() === user._id.toString()) {
+            return res.status(400).json({
+                message: "You cannot remove your own admin role"
+            });
+        }
+
+        user.role = "user";
+
+        await user.save();
+
+        res.status(200).json({
+            message: "Admin role removed successfully",
+            user: {
+                _id: user._id,
+                name: user.name,
+                email: user.email,
+                role: user.role,
+                createdAt: user.createdAt
+            }
+        });
+
+    } catch (error) {
+        console.error("Remove Admin Error:", error);
+
+        res.status(500).json({
+            message: error.message
+        });
+    }
+};
+
 
 module.exports = {
     registerUser,
     loginUser,
     verifyEmail,
-    getUsers
+    getUsers,
+    makeAdmin,
+    removeAdmin
 };

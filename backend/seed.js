@@ -19,10 +19,15 @@ const importData = async () => {
     
     const adminUser = await User.create({
       name: 'Admin User',
-      email: 'admin@shopnest.com',
+      email: 'dobariyavraj592@gmail.com',
       password: hashedPassword,
       role: 'admin'
     });
+    console.log('ADMIN CREATED:');
+console.log('Email:', adminUser.email);
+console.log('Role:', adminUser.role);
+console.log('Password hash:', adminUser.password);
+    
 
     const products = [
       {
@@ -76,5 +81,6 @@ const importData = async () => {
     process.exit(1);
   }
 };
+
 
 importData();
